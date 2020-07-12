@@ -31,11 +31,6 @@ import (
 	"github.com/filecoin-project/go-fil-markets/storagemarket/network"
 )
 
-// DefaultDealAcceptanceBuffer is the minimum number of epochs ahead of the current epoch
-// a deal's StartEpoch must be for the deal to be accepted.
-// The StartEpoch must be more than simply greater than the current epoch because we
-// need time to transfer data, publish the deal on chain, and seal the sector with the data
-var DefaultDealAcceptanceBuffer = abi.ChainEpoch(100)
 var _ storagemarket.StorageProvider = &Provider{}
 var _ network.StorageReceiver = &Provider{}
 
@@ -61,7 +56,6 @@ type Provider struct {
 	dataTransfer              datatransfer.Manager
 	universalRetrievalEnabled bool
 	customDealDeciderFunc     DealDeciderFunc
-	dealAcceptanceBuffer      abi.ChainEpoch
 	pubSub                    *pubsub.PubSub
 
 	deals fsm.Group
@@ -78,21 +72,13 @@ func EnableUniversalRetrieval() StorageProviderOption {
 	}
 }
 
-// DealAcceptanceBuffer allows a provider to set a buffer (in epochs) to account for the time
-// required for data transfer, deal verification, publishing, sealing, and committing.
-func DealAcceptanceBuffer(buffer abi.ChainEpoch) StorageProviderOption {
-	return func(p *Provider) {
-		p.dealAcceptanceBuffer = buffer
-	}
-}
-
-// DealDeciderFunc is a function which evaluates an incoming deal to decide if
-// it its accepted
+// DealDeciderFunc is a function which evaluates an incoming deal and the current chain height to decide if
+// the deal is accepted
 // It returns:
 // - boolean = true if deal accepted, false if rejected
 // - string = reason deal was not excepted, if rejected
 // - error = if an error occurred trying to decide
-type DealDeciderFunc func(context.Context, storagemarket.MinerDeal) (bool, string, error)
+type DealDeciderFunc func(context.Context, storagemarket.MinerDeal, abi.ChainEpoch) (bool, string, error)
 
 // CustomDealDecisionLogic allows a provider to call custom decision logic when validating incoming
 // deal proposals
@@ -119,18 +105,17 @@ func NewProvider(net network.StorageMarketNetwork,
 	pio := pieceio.NewPieceIOWithStore(carIO, fs, bs)
 
 	h := &Provider{
-		net:                  net,
-		proofType:            rt,
-		spn:                  spn,
-		fs:                   fs,
-		pio:                  pio,
-		pieceStore:           pieceStore,
-		conns:                connmanager.NewConnManager(),
-		storedAsk:            storedAsk,
-		actor:                minerAddress,
-		dataTransfer:         dataTransfer,
-		dealAcceptanceBuffer: DefaultDealAcceptanceBuffer,
-		pubSub:               pubsub.New(providerDispatcher),
+		net:          net,
+		proofType:    rt,
+		spn:          spn,
+		fs:           fs,
+		pio:          pio,
+		pieceStore:   pieceStore,
+		conns:        connmanager.NewConnManager(),
+		storedAsk:    storedAsk,
+		actor:        minerAddress,
+		dataTransfer: dataTransfer,
+		pubSub:       pubsub.New(providerDispatcher),
 	}
 
 	deals, err := newProviderStateMachine(
@@ -485,11 +470,6 @@ func (p *Provider) Configure(options ...StorageProviderOption) {
 	}
 }
 
-// DealAcceptanceBuffer returns the current deal acceptance buffer
-func (p *Provider) DealAcceptanceBuffer() abi.ChainEpoch {
-	return p.dealAcceptanceBuffer
-}
-
 // UniversalRetrievalEnabled returns whether or not universal retrieval
 // (retrieval by any CID, not just the root payload CID) is enabled
 // for this provider
@@ -648,15 +628,11 @@ func (p *providerDealEnvironment) Disconnect(proposalCid cid.Cid) error {
 	return p.p.conns.Disconnect(proposalCid)
 }
 
-func (p *providerDealEnvironment) DealAcceptanceBuffer() abi.ChainEpoch {
-	return p.p.dealAcceptanceBuffer
-}
-
-func (p *providerDealEnvironment) RunCustomDecisionLogic(ctx context.Context, deal storagemarket.MinerDeal) (bool, string, error) {
+func (p *providerDealEnvironment) RunCustomDecisionLogic(ctx context.Context, deal storagemarket.MinerDeal, ht abi.ChainEpoch) (bool, string, error) {
 	if p.p.customDealDeciderFunc == nil {
 		return true, "", nil
 	}
-	return p.p.customDealDeciderFunc(ctx, deal)
+	return p.p.customDealDeciderFunc(ctx, deal, ht)
 }
 
 var _ providerstates.ProviderDealEnvironment = &providerDealEnvironment{}

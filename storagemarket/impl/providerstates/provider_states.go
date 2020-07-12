@@ -38,8 +38,7 @@ type ProviderDealEnvironment interface {
 	Disconnect(proposalCid cid.Cid) error
 	FileStore() filestore.FileStore
 	PieceStore() piecestore.PieceStore
-	DealAcceptanceBuffer() abi.ChainEpoch
-	RunCustomDecisionLogic(context.Context, storagemarket.MinerDeal) (bool, string, error)
+	RunCustomDecisionLogic(context.Context, storagemarket.MinerDeal, abi.ChainEpoch) (bool, string, error)
 }
 
 // ProviderStateEntryFunc is the signature for a StateEntryFunc in the provider FSM
@@ -47,7 +46,7 @@ type ProviderStateEntryFunc func(ctx fsm.Context, environment ProviderDealEnviro
 
 // ValidateDealProposal validates a proposed deal against the provider criteria
 func ValidateDealProposal(ctx fsm.Context, environment ProviderDealEnvironment, deal storagemarket.MinerDeal) error {
-	tok, height, err := environment.Node().GetChainHead(ctx.Context())
+	tok, _, err := environment.Node().GetChainHead(ctx.Context())
 	if err != nil {
 		return ctx.Trigger(storagemarket.ProviderEventDealRejected, xerrors.Errorf("node error getting most recent state id: %w", err))
 	}
@@ -60,10 +59,6 @@ func ValidateDealProposal(ctx fsm.Context, environment ProviderDealEnvironment, 
 
 	if proposal.Provider != environment.Address() {
 		return ctx.Trigger(storagemarket.ProviderEventDealRejected, xerrors.Errorf("incorrect provider for deal"))
-	}
-
-	if height > proposal.StartEpoch-environment.DealAcceptanceBuffer() {
-		return ctx.Trigger(storagemarket.ProviderEventDealRejected, xerrors.Errorf("deal start epoch is too soon or deal already expired"))
 	}
 
 	// TODO: check StorageCollateral
@@ -117,7 +112,11 @@ func ValidateDealProposal(ctx fsm.Context, environment ProviderDealEnvironment, 
 // DecideOnProposal allows custom decision logic to run before accepting a deal, such as allowing a manual
 // operator to decide whether or not to accept the deal
 func DecideOnProposal(ctx fsm.Context, environment ProviderDealEnvironment, deal storagemarket.MinerDeal) error {
-	accept, reason, err := environment.RunCustomDecisionLogic(ctx.Context(), deal)
+	_, ht, err := environment.Node().GetChainHead(ctx.Context())
+	if err != nil {
+		return ctx.Trigger(storagemarket.ProviderEventDealRejected, xerrors.Errorf("custom deal decision logic failed to get chain head: %w", err))
+	}
+	accept, reason, err := environment.RunCustomDecisionLogic(ctx.Context(), deal, ht)
 	if err != nil {
 		return ctx.Trigger(storagemarket.ProviderEventDealRejected, xerrors.Errorf("custom deal decision logic failed: %w", err))
 	}
